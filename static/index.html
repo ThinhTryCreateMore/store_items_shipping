@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="vi">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tủ khuôn mặt – Quản trị</title>
+<style>
+:root{--bg:#f6f7f5;--ink:#1d2421;--line:#d9ddd8;--acc:#1f6f5c;--bad:#b3392f}
+@media(prefers-color-scheme:dark){:root{--bg:#161a18;--ink:#e8ebe8;--line:#2e3532;--acc:#4fb79c;--bad:#e5766c}}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+main{max-width:980px;margin:0 auto;padding:20px 16px 60px;display:grid;gap:28px}
+h1{font-size:22px;margin:0}h2{font-size:16px;margin:0 0 8px}
+form{display:flex;gap:8px;flex-wrap:wrap}
+input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:inherit}
+button{cursor:pointer}button.p{background:var(--acc);border-color:var(--acc);color:#fff}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+.wrap{overflow-x:auto}
+.row{display:grid;grid-template-columns:1fr 280px;gap:24px}
+@media(max-width:760px){.row{grid-template-columns:1fr}}
+img{max-width:100%;border-radius:6px;border:1px solid var(--line)}
+.ok{color:var(--acc)}.no{color:var(--bad)}
+.cards{display:flex;gap:12px;flex-wrap:wrap}.card{border:1px solid var(--line);border-radius:8px;padding:10px 14px;min-width:200px}
+.warn{color:var(--bad);font-weight:600}#banner{margin:0 0 8px;color:var(--acc)}
+</style>
+<main>
+  <h1>Tủ khuôn mặt – Quản trị</h1>
+
+  <section>
+    <h2>Thêm người dùng</h2>
+    <form id="f">
+      <input name="name" placeholder="Họ tên" required>
+      <input name="phone" placeholder="Số điện thoại">
+      <input name="locker" type="number" min="1" placeholder="Số ngăn" required>
+      <button class="p">Thêm người dùng</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Xuất dữ liệu khuôn mặt</h2>
+    <p>
+      <a href="/api/export/faces?fmt=json" download>Vector (JSON)</a> ·
+      <a href="/api/export/faces?fmt=csv" download>Vector (CSV)</a> ·
+      <a href="/api/export/faces?fmt=npz" download>Vector (NumPy .npz)</a> ·
+      <a href="/api/export/face_images" download>Ảnh mặt (ZIP)</a>
+    </p>
+  </section>
+
+  <section>
+    <h2>Trạng thái tủ</h2>
+    <p id="banner" hidden></p>
+    <div id="lockers" class="cards"></div>
+  </section>
+
+  <section class="row">
+    <div>
+      <h2>Người dùng</h2>
+      <div class="wrap"><table>
+        <thead><tr><th>Họ tên</th><th>SĐT</th><th>Ngăn</th><th>Số ảnh mặt</th><th>Vân tay</th><th></th></tr></thead>
+        <tbody id="users"></tbody>
+      </table></div>
+    </div>
+    <div>
+      <h2>Ảnh mới nhất từ ESP32</h2>
+      <img id="snap" alt="Chưa có ảnh từ ESP32. Nhấn nút trên board để gửi ảnh.">
+    </div>
+  </section>
+
+  <section>
+    <h2>Lịch sử quét gần đây</h2>
+    <div class="wrap"><table>
+      <thead><tr><th>Thời gian (UTC)</th><th>Người dùng</th><th>Cách</th><th>Điểm</th><th>Kết quả</th><th>Ngăn</th></tr></thead>
+      <tbody id="logs"></tbody>
+    </table></div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const api = (u, o) => fetch(u, o).then(r => r.json());
+
+async function loadUsers() {
+  const us = await api('/api/users');
+  $('#users').innerHTML = us.map(u => `<tr>
+    <td>${esc(u.name)}</td><td>${esc(u.phone)}</td><td>${u.locker}</td><td>${u.faces}</td><td>${u.finger_id ? 'Đã đăng ký (ID ' + u.finger_id + ')' : 'Chưa'}</td>
+    <td><button onclick="espEnroll(${u.id})">Đăng ký bằng ESP32</button>
+        <button onclick="enrollFinger(${u.id})" ${u.faces ? '' : 'disabled title="Cần đăng ký khuôn mặt trước"'}>Đăng ký vân tay</button>
+        <button onclick="pick(${u.id})">Tải ảnh lên</button>
+        <a href="/api/export/faces?fmt=json&user_id=${u.id}" download><button>Xuất</button></a>
+        <button onclick="del(${u.id})">Xóa</button></td></tr>`).join('')
+    || '<tr><td colspan="6">Chưa có người dùng. Thêm ở form phía trên.</td></tr>';
+}
+async function loadLogs() {
+  const ls = await api('/api/logs');
+  $('#logs').innerHTML = ls.map(l => `<tr><td>${esc(l.ts)}</td><td>${esc(l.name || '—')}</td>
+    <td>${{face: 'Khuôn mặt', finger: 'Vân tay', device: 'Thiết bị'}[l.method] || '—'}</td><td>${l.score == null ? '—' : l.score.toFixed(3)}</td>
+    <td class="${l.matched ? 'ok' : 'no'}">${l.method === 'device' ? esc(l.note) : l.matched ? 'Đúng' : 'Không khớp'}</td>
+    <td>${l.locker ?? '—'}</td></tr>`).join('')
+    || '<tr><td colspan="6">Chưa có lượt quét nào.</td></tr>';
+}
+$('#f').onsubmit = async e => {
+  e.preventDefault();
+  await fetch('/api/users', {method: 'POST', body: new FormData(e.target)});
+  e.target.reset(); loadUsers();
+};
+const FP_WHY = {
+  no_finger: 'Không thấy ngón tay hoặc cảm biến không phản hồi (kiểm tra dây TX/RX và nguồn 3V3).',
+  bad_image: 'Ảnh vân tay kém (tay ướt, quá khô hoặc chạm hụt). Đặt chặt đầu ngón tay và giữ khoảng 1 giây.',
+  mismatch: 'Hai lần quét không khớp. Đặt đúng cùng một ngón, cùng vị trí.',
+  model_fail: 'Cảm biến không tạo được mẫu từ hai lần quét. Thử lại.',
+  id_range: 'ID vân tay vượt phạm vi sức chứa của cảm biến.',
+  flash_fail: 'Cảm biến lỗi khi ghi vào bộ nhớ trong.',
+  store_fail: 'Lỗi giao tiếp khi lưu mẫu vào cảm biến (kiểm tra dây TX/RX, nguồn 3V3).'
+};
+let lastFp = null, firstLoad = true;
+async function loadState() {
+  const s = await api('/api/state');
+  $('#lockers').innerHTML = s.lockers.map(l => `<div class="card"><b>Ngăn ${l.id}</b><br>
+    Cửa: ${l.door === 'closed' ? 'Đóng' : l.door === 'open' ? 'Mở' : '—'}<br>
+    Hàng: ${l.item === null ? '—' : l.item ? 'Còn' : 'Đã lấy'}${l.dist != null ? ' (' + l.dist + ' cm)' : ''}
+    ${l.alarm ? '<br><span class="warn">Cửa mở nhưng chưa lấy hàng quá 20 giây</span>' : ''}</div>`).join('')
+    + `<div class="card">ESP32 DevKit<br>${s.device_online ? '<span class="ok">Đã kết nối</span>' : '<span class="no">Mất kết nối</span>'}<br>${s.device_last_seen != null ? 'Tín hiệu cuối: ' + s.device_last_seen + ' giây trước' : 'Chưa nhận tín hiệu nào'}</div>`;
+  const p = s.fp_pending;
+  $('#banner').hidden = !p;
+  if (p) $('#banner').textContent = `Đang chờ đăng ký vân tay cho người dùng #${p.user_id}: đặt cùng một ngón tay lên cảm biến 2 lần.`;
+  if (s.fp_last && s.fp_last.t !== lastFp) {
+    lastFp = s.fp_last.t;
+    if (!firstLoad) alert(s.fp_last.ok ? 'Đăng ký vân tay thành công.' : 'Đăng ký vân tay thất bại. ' + (FP_WHY[s.fp_last.reason] || 'Thử lại.'));
+  }
+  firstLoad = false;
+}
+async function enrollFinger(id) {
+  const r = await fetch(`/api/users/${id}/enroll_finger`, {method: 'POST'});
+  if (!r.ok) { alert((await r.json()).detail); return; }
+  alert('Đã gửi lệnh tới DevKit. Buzzer 1 tiếng = đặt ngón tay, 2 tiếng = nhấc tay rồi đặt lại cùng ngón.');
+  loadState();
+}
+async function espEnroll(id) {
+  await fetch(`/api/users/${id}/enroll_esp`, {method: 'POST'});
+  alert('Trong 60 giây tới, nhìn vào camera ESP32 và nhấn nút BOOT. Ảnh gửi lên sẽ được lưu cho người này.');
+}
+function pick(id) {
+  const i = document.createElement('input');
+  i.type = 'file'; i.accept = 'image/*'; i.capture = 'user';
+  i.onchange = async () => {
+    const fd = new FormData(); fd.append('file', i.files[0]);
+    const r = await fetch(`/api/users/${id}/photo`, {method: 'POST', body: fd});
+    alert(r.ok ? 'Đã lưu khuôn mặt.' : 'Không thấy khuôn mặt trong ảnh. Thử ảnh rõ hơn, nhìn thẳng.');
+    loadUsers();
+  };
+  i.click();
+}
+async function del(id) {
+  if (!confirm('Xóa người dùng này và toàn bộ dữ liệu khuôn mặt?')) return;
+  await fetch(`/api/users/${id}`, {method: 'DELETE'}); loadUsers();
+}
+function refresh() { loadUsers(); loadLogs(); loadState(); $('#snap').src = '/api/snapshot?t=' + Date.now(); }
+refresh(); setInterval(refresh, 3000);
+</script>
